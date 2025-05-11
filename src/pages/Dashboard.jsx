@@ -30,8 +30,10 @@ export default function Dashboard() {
   const [histogramData, setHistogramData] = useState([])
   // KPI metrics
   const [avgLoyalty, setAvgLoyalty] = useState(0)
+  const [loyaltyRange, setLoyaltyRange] = useState([0, 1])
   const [avgChurnRate, setAvgChurnRate] = useState(0)
   const [avgCLV, setAvgCLV] = useState(0)
+  const [leadRange, setLeadRange] = useState([0, 1])
   // user lookup
   const [searchId, setSearchId] = useState('')
   const [userProfile, setUserProfile] = useState(null)
@@ -64,6 +66,8 @@ export default function Dashboard() {
         0
       )
       setAvgLoyalty((sum / loyaltyRecords.length).toFixed(2))
+      const valsL = loyaltyRecords.map(r => parseFloat(r.predicted_loyalty_score) || 0)
+      setLoyaltyRange([ Math.min(...valsL), Math.max(...valsL) ])
     }
     if (outreachRecords.length) {
       const sumClv = outreachRecords.reduce(
@@ -71,6 +75,8 @@ export default function Dashboard() {
         0
       )
       setAvgCLV((sumClv / outreachRecords.length).toFixed(2))
+      const valsS = outreachRecords.map(r => parseFloat(r.LeadScore) || 0)
+      setLeadRange([ Math.min(...valsS), Math.max(...valsS) ])
     }
     if (churnRecords.length) {
       const sumCh = churnRecords.reduce(
@@ -128,27 +134,127 @@ export default function Dashboard() {
   const handleSearch = () => {
     const id = searchId.trim()
     if (!id) return
+  
+    // 1) Lookup records
     const l = loyaltyRecords.find(r => r.customer_id === id)
     const o = outreachRecords.find(r => r.customer_id === id)
     const c = churnRecords.find(r => r.customer_id === id)
+  
+    // 2) No data case
     if (!l && !o && !c) {
       setUserProfile({ notFound: true })
       return
     }
-    // compute composite health score
-    const scores = []
-    if (l && l.predicted_loyalty_score)
-      scores.push(parseFloat(l.predicted_loyalty_score))
-    if (o && o.LeadScore) scores.push(parseFloat(o.LeadScore))
-    if (c && c.churn_risk_predicted)
-      scores.push(1 - parseFloat(c.churn_risk_predicted))
-    const health =
-      scores.length > 0
-        ? ((scores.reduce((a, b) => a + b, 0) / scores.length) * 20).toFixed(1)
-        : null
-    setUserProfile({ l, o, c, health })
+  
+    // 3) Raw feature values
+    const rawL = parseFloat(l?.predicted_loyalty_score) || 0
+    const rawS = parseFloat(o?.LeadScore)               || 0
+    const rawC = parseFloat(c?.churn_risk_predicted)   || 0
+  
+    // 4) Global min/max (from state)
+    const [minL, maxL] = loyaltyRange     // e.g. [10, 95]
+    const [minS, maxS] = leadRange        // e.g. [5, 80]
+  
+    // 5) Normalize each to 0–1
+    const normL = maxL > minL ? (rawL - minL) / (maxL - minL) : 0
+    const normS = maxS > minS ? (rawS - minS) / (maxS - minS) : 0
+    const normC = 1 - rawC  // churn inverted
+  
+    // 6) Composite health score (0–100)
+    const health = ((normL + normS + normC) / 3 * 100).toFixed(1)
+  
+    // 7) Optional: k-means segment prediction
+    let clusterInfo = null
+    if (kmeansModel) {
+      const feat = [normL, normS, normC]
+      let best = { cluster: null, dist: Infinity }
+      kmeansModel.centroids.forEach((cent, ci) => {
+        const dist = Math.hypot(
+          feat[0] - cent.centroid[0],
+          feat[1] - cent.centroid[1],
+          feat[2] - cent.centroid[2]
+        )
+        if (dist < best.dist) best = { cluster: ci, dist }
+      })
+      clusterInfo = best
+    }
+  
+    // 8) Update UI state
+    setUserProfile({ 
+      l, 
+      o, 
+      c, 
+      health, 
+      ...(clusterInfo && { clusterInfo }) 
+    })
   }
-
+  function renderCTAs(health, customerId) {
+    if (health <= 33) {
+      return (
+        <div className="space-x-2">
+          <button
+            onClick={() => sendWorkflow('retention_email', customerId)}
+            className="px-4 py-2 bg-red-600 text-white rounded"
+          >
+            Send Retention Email
+          </button>
+          <button
+            onClick={() => sendWorkflow('schedule_call', customerId)}
+            className="px-4 py-2 bg-red-200 text-red-800 rounded"
+          >
+            Schedule Call
+          </button>
+        </div>
+      )
+    } else if (health <= 66) {
+      return (
+        <div className="space-x-2">
+          <button
+            onClick={() => sendWorkflow('promo_code', customerId)}
+            className="px-4 py-2 bg-yellow-600 text-white rounded"
+          >
+            Send Promo Code
+          </button>
+          <button
+            onClick={() => sendWorkflow('upgrade_invite', customerId)}
+            className="px-4 py-2 bg-yellow-200 text-yellow-800 rounded"
+          >
+            Invite to Upgrade
+          </button>
+        </div>
+      )
+    } else {
+      return (
+        <div className="space-x-2">
+          <button
+            onClick={() => sendWorkflow('thank_you_bonus', customerId)}
+            className="px-4 py-2 bg-green-600 text-white rounded"
+          >
+            Send Thank-You + Bonus
+          </button>
+          <button
+            onClick={() => sendWorkflow('referral_request', customerId)}
+            className="px-4 py-2 bg-green-200 text-green-800 rounded"
+          >
+            Request Referral
+          </button>
+        </div>
+      )
+    }
+  }
+  async function sendWorkflow(action, customerId) {
+    try {
+      await fetch(`/api/workflow/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customer_id: customerId }),
+      })
+      alert(`${action} triggered for ${customerId}`)
+    } catch (e) {
+      console.error(e)
+      alert('Failed to trigger workflow')
+    }
+  }    
   return (
     <div className="p-6 space-y-8 bg-gray-50">
       {/* KPI Bar */}
@@ -244,7 +350,7 @@ export default function Dashboard() {
                   <strong>Health Score:</strong> {userProfile.health} / 100
                 </p>
                 <pre className="bg-gray-100 p-2 rounded text-sm overflow-x-auto">
-                  {JSON.stringify(userProfile, null, 2)}
+                  {console.log(JSON.stringify(userProfile, null, 2))}
                 </pre>
               </>
             )}
@@ -254,11 +360,16 @@ export default function Dashboard() {
       {/* User Profile & Feature Breakdown */}
         {userProfile && !userProfile.notFound && (
         <div className="mt-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* Health Score */}
-            <div className="bg-indigo-50 border-l-4 border-indigo-600 p-4">
-            <h4 className="text-indigo-800 font-semibold">Health Score</h4>
-            <p className="text-3xl">{userProfile.health ?? '–'}</p>
+            {userProfile && !userProfile.notFound && (
+            <div className="bg-indigo-50 border-l-4 border-indigo-600 p-4 rounded">
+                <h4 className="text-indigo-800 font-semibold">Customer Health</h4>
+                <p className="text-3xl">{userProfile.health} / 100</p>
+                <div className="mt-4">
+                    {renderCTAs(parseFloat(userProfile.health), userProfile.l.customer_id)}
+                </div>
             </div>
+            
+        )}
 
             {/* Loyalty */}
             <div className="bg-green-50 border-l-4 border-green-600 p-4">
