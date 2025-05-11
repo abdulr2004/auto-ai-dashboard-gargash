@@ -1,166 +1,288 @@
-import React, { useEffect, useState } from 'react';
+// src/pages/Dashboard.jsx
+import KMeans from 'ml-kmeans'
+import React, { useState, useEffect } from 'react'
+import Papa from 'papaparse'
 import {
-  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-} from 'recharts';
-import Papa from 'papaparse';
+  BarChart,
+  Bar,
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+} from 'recharts'
 
-export default function AutoAIDashboard() {
-  // Panel states
-  const [recData, setRecData] = useState([]);
-  const [leadData, setLeadData] = useState([]);
-  const [partsData, setPartsData] = useState([]);
-  const [roiData, setRoiData] = useState([]);
+const loyaltyUrl =
+  'https://raw.githubusercontent.com/abdulr2004/comployaltyscores/refs/heads/main/loyalty_scored_dataset.csv'
+const outreachUrl =
+  'https://raw.githubusercontent.com/Prudhvivarma0/Data/refs/heads/main/final_outreach_list.csv'
+const churnUrl =
+  'https://raw.githubusercontent.com/Darth-Freljord/Gargash-Hackathon-CltAltElite/refs/heads/main/augmented_car_bababababa_updated.csv'
 
-  // User search & segmentation
-  const [searchId, setSearchId] = useState('');
-  const [userProfile, setUserProfile] = useState(null);
-  const [userScore, setUserScore] = useState(null);
-  const [segLoading, setSegLoading] = useState(false);
+export default function Dashboard() {
+  // raw records
+  const [loyaltyRecords, setLoyalty] = useState([])
+  const [outreachRecords, setOutreach] = useState([])
+  const [churnRecords, setChurn] = useState([])
+  // histogram data
+  const [histogramData, setHistogramData] = useState([])
+  // KPI metrics
+  const [avgLoyalty, setAvgLoyalty] = useState(0)
+  const [avgChurnRate, setAvgChurnRate] = useState(0)
+  const [avgCLV, setAvgCLV] = useState(0)
+  // user lookup
+  const [searchId, setSearchId] = useState('')
+  const [userProfile, setUserProfile] = useState(null)
+  const [kmeansModel, setKMeansModel] = useState(null)
 
-  // Loyalty scored dataset
-  const [loyaltyRecords, setLoyaltyRecords] = useState([]);
-  const loyaltyCsvUrl = 'https://raw.githubusercontent.com/abdulr2004/comployaltyscores/refs/heads/main/loyalty_scored_dataset.csv';
-
-  // Load all panel data + loyalty dataset
-  const loadAll = async () => {
-    // Placeholder for real API calls
-    setRecData([{ date: '2025-05-01', ctrLift: 2.1 }]);
-    setLeadData([{ tier: 'High', sent: 120, converted: 48 }]);
-    setPartsData([{ date: '2025-05-01', forecast: 50, actual: 48 }]);
-    setRoiData([{ points: 5, lift: 1.2 }]);
-    // Fetch loyalty scored CSV
-    Papa.parse(loyaltyCsvUrl, {
-      download: true,
+  // helper: fetch & parse CSV
+  const fetchCsv = async (url, setter) => {
+    const res = await fetch(url)
+    const text = await res.text()
+    const { data, errors } = Papa.parse(text, {
       header: true,
       skipEmptyLines: true,
-      complete: (results) => setLoyaltyRecords(results.data),
-      error: (err) => console.error('CSV parse error:', err),
-    });
-  };
+    })
+    if (errors.length) console.warn('CSV parse errors', errors)
+    setter(data)
+  }
 
-  useEffect(() => { loadAll(); }, []);
+  // load all three datasets
+  useEffect(() => {
+    fetchCsv(loyaltyUrl, setLoyalty)
+    fetchCsv(outreachUrl, setOutreach)
+    fetchCsv(churnUrl, setChurn)
+  }, [])
 
-  // Handle user segmentation search
-  const handleSearch = () => {
-    if (!searchId || loyaltyRecords.length === 0) return;
-    setSegLoading(true);
-    // Find record by user ID or Email
-    const rec = loyaltyRecords.find(r => r.userId === searchId || r.email === searchId);
-    if (rec) {
-      setUserProfile({ id: rec.userId, name: rec.name, email: rec.email });
-      setUserScore(rec.score);
-    } else {
-      setUserProfile(null);
-      setUserScore('Not found');
+  // compute KPIs once data is loaded
+  useEffect(() => {
+    if (loyaltyRecords.length) {
+      const sum = loyaltyRecords.reduce(
+        (acc, r) => acc + parseFloat(r.predicted_loyalty_score || 0),
+        0
+      )
+      setAvgLoyalty((sum / loyaltyRecords.length).toFixed(2))
     }
-    setSegLoading(false);
-  };
+    if (outreachRecords.length) {
+      const sumClv = outreachRecords.reduce(
+        (acc, r) => acc + parseFloat(r.CLV_12m || 0),
+        0
+      )
+      setAvgCLV((sumClv / outreachRecords.length).toFixed(2))
+    }
+    if (churnRecords.length) {
+      const sumCh = churnRecords.reduce(
+        (acc, r) => acc + parseFloat(r.churn_risk_predicted || 0),
+        0
+      )
+      setAvgChurnRate((sumCh / churnRecords.length).toFixed(2))
+    }
+  }, [loyaltyRecords, outreachRecords, churnRecords])
 
-  // Loading fallback
-  if (!loyaltyRecords.length) return <div className="p-4">Loading data...</div>;
+  // build churn histogram
+  useEffect(() => {
+    if (!churnRecords.length) return
+    const bins = Array.from({ length: 10 }, (_, i) => ({
+      bin: `${(i * 0.1).toFixed(1)}–${((i + 1) * 0.1).toFixed(1)}`,
+      count: 0,
+    }))
+    churnRecords.forEach(r => {
+      const val = parseFloat(r.churn_risk_predicted)
+      if (!isNaN(val) && val >= 0 && val <= 1) {
+        bins[Math.min(Math.floor(val * 10), 9)].count += 1
+      }
+    })
+    setHistogramData(bins)
+  }, [churnRecords])
 
-  // Card component
-  const Card = ({ title, actions, children }) => (
-    <div className="bg-white rounded-lg shadow p-4">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-semibold">{title}</h2>
-        <div className="space-x-2">
-          {actions?.map((act, i) => (
-            <button key={i} onClick={act.onClick} className="text-sm px-2 py-1 bg-blue-100 rounded">
-              {act.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      {children}
-    </div>
-  );
+  // global distributions
+  const tierCounts = loyaltyRecords.reduce((acc, r) => {
+    const tier = r.loyalty_tier || 'Unknown'
+    acc[tier] = (acc[tier] || 0) + 1
+    return acc
+  }, {})
+  const tierData = Object.entries(tierCounts).map(([tier, count]) => ({
+    tier,
+    count,
+  }))
+
+  const segmentCounts = outreachRecords.reduce((acc, r) => {
+    const seg = r.segment || 'Unknown'
+    acc[seg] = (acc[seg] || 0) + 1
+    return acc
+  }, {})
+  const segmentData = Object.entries(segmentCounts).map(([segment, count]) => ({
+    segment,
+    count,
+  }))
+
+  const scatterData = outreachRecords.map(r => ({
+    x: parseFloat(r.CreditRisk) || 0,
+    y: parseFloat(r.CLV_12m) || 0,
+    segment: r.segment,
+  }))
+
+  // handle user lookup
+  const handleSearch = () => {
+    const id = searchId.trim()
+    if (!id) return
+    const l = loyaltyRecords.find(r => r.customer_id === id)
+    const o = outreachRecords.find(r => r.customer_id === id)
+    const c = churnRecords.find(r => r.customer_id === id)
+    if (!l && !o && !c) {
+      setUserProfile({ notFound: true })
+      return
+    }
+    // compute composite health score
+    const scores = []
+    if (l && l.predicted_loyalty_score)
+      scores.push(parseFloat(l.predicted_loyalty_score))
+    if (o && o.LeadScore) scores.push(parseFloat(o.LeadScore))
+    if (c && c.churn_risk_predicted)
+      scores.push(1 - parseFloat(c.churn_risk_predicted))
+    const health =
+      scores.length > 0
+        ? ((scores.reduce((a, b) => a + b, 0) / scores.length) * 20).toFixed(1)
+        : null
+    setUserProfile({ l, o, c, health })
+  }
 
   return (
-    <div className="p-6 bg-gray-100 min-h-screen space-y-6">
-      {/* User Search & Segmentation */}
-      <div className="bg-white rounded-lg shadow p-4">
-        <h2 className="text-xl font-semibold mb-2">Search User & Segment</h2>
-        <div className="flex items-center space-x-2 mb-4">
-          <input
-            type="text"
-            placeholder="Enter User ID or Email"
-            value={searchId}
-            onChange={e => setSearchId(e.target.value)}
-            className="border rounded p-2 flex-grow"
-          />
-          <button onClick={handleSearch} className="px-4 py-2 bg-blue-500 text-white rounded">
-            {segLoading ? 'Searching...' : 'Get Segment'}
-          </button>
+    <div className="p-6 space-y-8 bg-gray-50">
+      {/* KPI Bar */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="p-4 bg-white rounded shadow">
+          <h4 className="font-semibold">Avg Loyalty Score</h4>
+          <p className="text-2xl">{avgLoyalty}</p>
         </div>
-        {userProfile && (
-          <div className="p-4 bg-gray-50 rounded">
-            <p><strong>Name:</strong> {userProfile.name}</p>
-            <p><strong>Email:</strong> {userProfile.email}</p>
-            <p><strong>Segment Score:</strong> {userScore}</p>
-          </div>
-        )}
+        <div className="p-4 bg-white rounded shadow">
+          <h4 className="font-semibold">Avg CLV₁₂ₘ</h4>
+          <p className="text-2xl">{avgCLV}</p>
+        </div>
+        <div className="p-4 bg-white rounded shadow">
+          <h4 className="font-semibold">Avg Churn Rate</h4>
+          <p className="text-2xl">{avgChurnRate}</p>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recommendation CTR Lift */}
-        <Card title="Recommendation CTR Lift" actions={[{ label: 'Refresh', onClick: loadAll }]}>  
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={recData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis unit="%" />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="ctrLift" name="CTR Lift" stroke="#8884d8" strokeWidth={2} />
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
-
-        {/* Lead-Score Tiers vs Conversions */}
-        <Card title="Lead-Score Tiers vs Conversions" actions={[{ label: 'Refresh', onClick: loadAll }]}>  
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={leadData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" />
+      {/* Global Distributions */}
+      <div className="grid grid-cols-4 gap-4">
+        <div className="bg-white p-4 rounded shadow">
+          <h3 className="font-semibold mb-2">Loyalty Tier Breakdown</h3>
+          <ResponsiveContainer width="100%" height={150}>
+            <BarChart data={tierData}>
               <XAxis dataKey="tier" />
               <YAxis />
               <Tooltip />
-              <Legend />
-              <Bar dataKey="sent" name="Leads Sent" barSize={20} fill="#8884d8" />
-              <Bar dataKey="converted" name="Converted" barSize={20} fill="#82ca9d" />
+              <Bar dataKey="count" fill="#4f46e5" />
             </BarChart>
           </ResponsiveContainer>
-        </Card>
-
-        {/* Parts Usage Forecast vs Actual */}
-        <Card title="Parts Usage: Forecast vs Actual" actions={[{ label: 'Refresh', onClick: loadAll }]}>  
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={partsData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
+        </div>
+        <div className="bg-white p-4 rounded shadow">
+          <h3 className="font-semibold mb-2">Customer Segments</h3>
+          <ResponsiveContainer width="100%" height={150}>
+            <BarChart data={segmentData}>
+              <XAxis dataKey="segment" tick={{ fontSize: 10 }} />
               <YAxis />
               <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="forecast" name="Forecast" stroke="#82ca9d" />
-              <Line type="monotone" dataKey="actual" name="Actual" stroke="#8884d8" />
-            </LineChart>
+              <Bar dataKey="count" fill="#10b981" />
+            </BarChart>
           </ResponsiveContainer>
-        </Card>
-
-        {/* Loyalty Reward ROI */}
-        <Card title="Loyalty Reward ROI" actions={[{ label: 'Refresh', onClick: loadAll }]}>  
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={roiData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="points" />
-              <YAxis unit="%" />
+        </div>
+        <div className="bg-white p-4 rounded shadow">
+          <h3 className="font-semibold mb-2">Churn Risk Distribution</h3>
+          <ResponsiveContainer width="100%" height={150}>
+            <BarChart data={histogramData}>
+              <XAxis dataKey="bin" tick={{ fontSize: 10 }} />
+              <YAxis allowDecimals={false} />
               <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="lift" name="Repeat Rate Lift" stroke="#ffc658" />
-            </LineChart>
+              <Bar dataKey="count" fill="#ef4444" />
+            </BarChart>
           </ResponsiveContainer>
-        </Card>
+        </div>
+        <div className="bg-white p-4 rounded shadow">
+          <h3 className="font-semibold mb-2">CLV vs. CreditRisk</h3>
+          <ResponsiveContainer width="100%" height={150}>
+            <ScatterChart>
+              <CartesianGrid />
+              <XAxis dataKey="x" name="CreditRisk" />
+              <YAxis dataKey="y" name="CLV₁₂ₘ" />
+              <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+              <Scatter data={scatterData} fill="#f59e0b" />
+            </ScatterChart>
+          </ResponsiveContainer>
+        </div>
       </div>
+
+      {/* User Lookup */}
+      <div className="bg-white p-6 rounded shadow space-y-4">
+        <h2 className="text-xl font-semibold">Lookup Customer</h2>
+        <div className="flex space-x-2">
+          <input
+            type="text"
+            placeholder="Enter customer_id"
+            value={searchId}
+            onChange={e => setSearchId(e.target.value)}
+            className="flex-1 p-2 border rounded"
+          />
+          <button
+            onClick={handleSearch}
+            className="px-4 py-2 bg-indigo-600 text-white rounded"
+          >
+            Search
+          </button>
+        </div>
+        {userProfile && (
+          <div className="mt-4 space-y-2">
+            {userProfile.notFound ? (
+              <p>No records found for that ID.</p>
+            ) : (
+              <>
+                <p>
+                  <strong>Health Score:</strong> {userProfile.health} / 100
+                </p>
+                <pre className="bg-gray-100 p-2 rounded text-sm overflow-x-auto">
+                  {JSON.stringify(userProfile, null, 2)}
+                </pre>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      {/* User Profile & Feature Breakdown */}
+        {userProfile && !userProfile.notFound && (
+        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Health Score */}
+            <div className="bg-indigo-50 border-l-4 border-indigo-600 p-4">
+            <h4 className="text-indigo-800 font-semibold">Health Score</h4>
+            <p className="text-3xl">{userProfile.health ?? '–'}</p>
+            </div>
+
+            {/* Loyalty */}
+            <div className="bg-green-50 border-l-4 border-green-600 p-4">
+            <h4 className="text-green-800 font-semibold">Loyalty Score</h4>
+            <p className="text-2xl">{userProfile.l?.predicted_loyalty_score}</p>
+            <p className="text-sm text-gray-600">{userProfile.l?.loyalty_tier} tier</p>
+            </div>
+
+            {/* Lead */}
+            <div className="bg-yellow-50 border-l-4 border-yellow-600 p-4">
+            <h4 className="text-yellow-800 font-semibold">Lead Score</h4>
+            <p className="text-2xl">{userProfile.o?.LeadScore}</p>
+            <p className="text-sm text-gray-600">{userProfile.o?.segment}</p>
+            </div>
+
+            {/* Churn */}
+            <div className="bg-red-50 border-l-4 border-red-600 p-4">
+            <h4 className="text-red-800 font-semibold">Churn Risk</h4>
+            <p className="text-2xl">{userProfile.c?.churn_risk_predicted}</p>
+            <p className="text-sm text-gray-600">1 = highest risk</p>
+            </div>
+        </div>
+        )}
+
     </div>
-  );
+  )
 }
