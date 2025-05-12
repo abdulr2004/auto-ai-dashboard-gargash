@@ -118,18 +118,5 @@ The API documentation is available at `/api/docs` when running the server locall
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Support
 
-For support, please contact our team at support@gargash.com or open an issue in this repository.
 
-## Acknowledgements
-
-- [React.js](https://reactjs.org/)
-- [Node.js](https://nodejs.org/)
-- [MongoDB](https://www.mongodb.com/)
-- [TensorFlow](https://www.tensorflow.org/)
-- [Material UI](https://mui.com/)
-
----
-
-© 2025 Gargash Enterprises. All rights reserved.
